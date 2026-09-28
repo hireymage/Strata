@@ -284,8 +284,8 @@ def cc(g) -> str:
 
 def gpu_problem(g, together=False):
     """Why Strata cannot use this card, in plain words (None: it can)."""
-    if int(g["arch"]) < 75:
-        return (f"not supported - older than the RTX 20 series (compute capability {cc(g)}; Strata needs 7.5 or "
+    if int(g["arch"]) < 61:
+        return (f"not supported - older than the GTX 10 series (compute capability {cc(g)}; Strata needs 6.0 or "
                 "newer)")
     if together and g["vram_gb"] < SPLIT_MIN_VRAM_GB - 0.5:
         return (f"not supported together with other GPUs - {g['vram_gb']:.0f} GB of VRAM (a card sharing the model "
@@ -348,7 +348,7 @@ def check_gpus(sel, found, what="") -> None:
         ones = " or ".join(f"--gpu {x['index']}" for x in single)
         both = "--gpus " + ",".join(str(x["index"]) for x in can) if can else ""
         hint = ((f"use these together: {both}" + (f" (or one card: {ones})" if not together else "")) if can else
-                f"use one card: {ones}" if single else "Strata needs an NVIDIA RTX 20 series or newer card")
+                f"use one card: {ones}" if single else "Strata needs an NVIDIA GTX 10 series or newer card")
         fail(f"GPU {i}{'' if g is None else ' (' + g['name'] + ')'} {what}cannot be used: {p}", hint)
 
 
@@ -383,7 +383,7 @@ def choose_gpus(a, found) -> list:
     single = sorted([g for g in found if gpu_problem(g) is None], key=lambda x: (-round(x["vram_gb"]), x["index"]))
     if not single:
         gpu_table(found)
-        fail("none of your GPUs can run Strata", "it needs an NVIDIA RTX 20 series or newer (compute capability 7.5+)")
+        fail("none of your GPUs can run Strata", "it needs an NVIDIA GTX 10 series or newer (compute capability 6.0+)")
     can = together_ok(found)
     if not can:
         return [single[0]["index"]]
@@ -1365,8 +1365,6 @@ def main() -> int:
     if not found:
         fail("no NVIDIA GPU found (nvidia-smi did not answer)",
              "install the NVIDIA driver from https://www.nvidia.com/drivers and restart the PC")
-    if len(found) > 1 or gpu_problem(found[0]) is not None:
-        gpu_table(found)
     sel = choose_gpus(a, found)                        # asked when two or more cards can share the model
     multi = sel if len(sel) > 1 else []
     a.gpu = sel[0]                                     # the main GPU: the checks and the sizing below are its

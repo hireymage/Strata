@@ -423,7 +423,13 @@ void gdn_step_norm_multi(float* state, const float* h, int conv_channels, const 
 
 namespace {
 __global__ void wait_flag_ge_kernel(const volatile uint32_t* flag, uint32_t value) {
+#if __CUDA_ARCH__ >= 700
     while (*flag < value) __nanosleep(100);
+#else
+    // Pascal port: __nanosleep landed with Volta (sm_70); a fenced bare spin is the pre-sm_70
+    // equivalent here - one thread, waiting on host-published memory.
+    while (*flag < value) __threadfence();
+#endif
     __threadfence_system();
 }
 }  // namespace
@@ -472,7 +478,12 @@ __global__ void resident_plan_kernel(const int32_t* __restrict__ ids, int n, int
 }
 __global__ void wait_flag_ge_or_kernel(const volatile uint32_t* flag, uint32_t value, const volatile uint32_t* skip) {
     if (*skip == value) return;
+#if __CUDA_ARCH__ >= 700
     while (*flag < value) __nanosleep(100);
+#else
+    // Pascal port: fenced bare spin below Volta - see wait_flag_ge_kernel above.
+    while (*flag < value) __threadfence();
+#endif
     __threadfence_system();
 }
 __global__ void copy_i32_unless_kernel(int32_t* __restrict__ dst, const volatile int32_t* src, int n,

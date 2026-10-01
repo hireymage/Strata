@@ -231,7 +231,11 @@ logged, and exposed by `strata-device`. Kernel-selection sites read the record (
 consumers: the `static int cc_major[64]` caches in `qsa_select.cu`/`qsa_prompt_attn.cu` —
 replace with a shared accessor; behavior-identical).
 Gate: build, unit test of the caps record, `strata-device` prints the full matrix on the
-2×1080 Ti rig (expect `can_peer == 0` both ways).
+2×1080 Ti rig. DONE 2026-10-01 (commit fe665a5) - and the expectation above was WRONG:
+canAccessPeer reports YES both ways on this rig, so peer access is *available* here even on
+the (claimed) PHB topology - which only makes the optional P2P upgrade path cheaper; the
+design still never requires it. Caps measured: sm_61, 49152 B smem opt-in, dp4a yes, mma no,
+cp.async no, GPU0 free ~0.41 GiB (production engine resident on both cards).
 
 ### Fáze 3 — Explicit roles (`main-device` / `draft-device`)
 New execution strategy, **separate from layer split** (opt-in flag group; layer split and
@@ -391,3 +395,15 @@ regressions: `ple_parity` (upstream test fixture absent), `kv_hybrid_parity` (mo
 production uses int8 KV, unaffected), `expert_multi_test` (E5-2678 v3 has no AVX512-VNNI/
 VBMI). Config note: vendored `third_party/ggml` in 0.1.32 is an incomplete checkout (no
 CMakeLists); configure with `-DSTRATA_GGML_DIR=<llama.cpp checkout with pinned 3cf0325>`.
+
+## 8. Fáze 2 krok-záznam (2026-10-01 večer)
+
+- Commit fe665a5: DeviceCaps (+ device_caps(), peer_access_matrix()) in
+  include/strata/core/device.hpp + src/core/device.cu; strata-device enumerates every visible
+  device with its caps and prints the peer matrix. HIP path kept (gcn arch + guards);
+  STRATA_EMULATE_CC honoured via cc_major_of/cc_minor_of/smem_optin_of.
+- Build 237/237, ctest 50/53 (the same 3 pre-existing baseline failures; no new ones).
+- Gate result on 2×1080 Ti: full matrix printed; canAccessPeer YES both ways (the earlier
+  "expected 0" prediction falsified - peer IS available over this topology).
+- Next (Fáze 2b): first consumers - point the static int cc_major[64] caches at the caps
+  record (behaviour-identical), then Fáze 3 explicit roles.

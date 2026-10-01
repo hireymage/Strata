@@ -1,0 +1,16 @@
+{
+  "exe": "/home/hozzy/src/Strata-t0130/build-sm61/strata",
+  "args": ["--pack", "/mnt/models2/strata-q2_0-pack",
+    "--native", "/mnt/models2/strata-gguf/Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00001-of-00002.gguf",
+    "--ple-gguf", "/mnt/models2/strata-gguf/Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00002-of-00002.gguf",
+    "--expert-profile", "/mnt/models2/strata-q2_0-pack/data/expert-profile.bin",
+    "--expert-cache", "auto", "--prefill", "2048", "--spec", "4",
+    "--mtp", "/mnt/models2/strata-q2_0-pack/mtp-rt",
+    "--max-context", "8192", "--kv", "int8",
+    "--mmap-experts",
+    "--expert-cache-device1", "5000"],
+  "cwd": "/home/hozzy/src/Strata-t0130",
+  "tokenizer": "/mnt/models2/strata-q2_0-pack/tokenizer",
+  "model_name": "qwen3.8-flash-next-q2_0-sm61-probe",
+  "log": "/mnt/models2/strata-q2_0-pack/probe-engine.log"
+}

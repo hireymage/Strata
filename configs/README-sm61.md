@@ -21,13 +21,20 @@ python3 serve/server.py --engine strata --config configs/sm61-single-gpu.json \
     --host 0.0.0.0 --port 8095
 ```
 
-| Config | What the 2nd GPU does | Decode (new topic) | Warm decode | Prefill |
+| Config | What the 2nd GPU does | Decode cold-cache | Decode warm-cache | Prefill warm |
 |---|---|---|---|---|
-| `sm61-single-gpu.json` | idle | **6.8 tok/s** | **15.5 tok/s** | **8.7 tok/s** |
-| `sm61-2gpu-expert-cache.json` | 3600 extra expert slots (device1) | 5.3 tok/s (layer placement) / 3.9 (stripe) | — | 4.9 |
-| `sm61-2gpu-layer-split.json` | pipeline: layers 19-47 + head on CUDA1 | 4.3-4.5 tok/s | — | — |
+| `sm61-single-gpu.json` | idle | 0.91 tok/s | 6.90 tok/s | 17.2 tok/s |
+| `sm61-2gpu-device1.json` | 3600 extra expert slots (device1) | **1.35 tok/s (+48 %)** | **7.09-7.33 tok/s** | **17.2 tok/s** |
+| `sm61-2gpu-expert-cache.json` | same tier + `remote-placement layer` | — | was measured slower | — |
+| `sm61-2gpu-layer-split.json` | pipeline: layers 19-47 + head on CUDA1 | — | was measured slower | — |
 
-**Single GPU is the fastest decode for this pack.** The measured numbers make the
+**Realistic-prompt A/B (2026-10-01, identical decode streams, cold = `drop_caches`)** — the
+earlier "single GPU fastest" table was confounded by a degenerate 64x-"9" prompt whose token
+stream differed per config, so its tok/s numbers across configs were not comparable. The
+cold-cache result is the one production traffic sees (page cache of the 34 GB experts.bin
+gets evicted; 31 GB RAM). `--expert-cache-per-layer` and `--no-prefill-borrow` measured
+slower and are not exposed here; the layer_next_ admission bug they uncovered is fixed in
+commit 7d0f9f9. The measured numbers make the
 trade-off explicit:
 
 - `--layer-split auto --split-device CUDA0,CUDA1` — a capacity option (KV/expert

@@ -333,3 +333,25 @@ CPU pool, and the Pascal build (`STRATA_EXPERIMENTAL_SM60`).
 | Draft prefill on the DRAFT GPU stalls TTFT if the handoff is not double-buffered | event-guarded double buffer; measure B1 vs B2; fall back to B2 |
 | Host sync storm (8+ syncs/round) grows with the new handoff | instrumentation first (Fáze 7), batching only in Fáze 9 |
 | sm61 rig cannot falsify heterogeneous-role claims | explicit measurement-honesty section (Fáze 12); bench script for other owners |
+---
+
+## 6. Corrections recorded 2026-10-01 (user) — baseline and test-rig reality
+
+1. **The work targets upstream `Niko1221/Strata`** (the x99 tree origin), not just the
+   `hireymage/Strata` fork. Upstream `main` has moved past the v0.1.30 base this analysis
+   was written against: **0.1.32 at `c499bd1` = +150 commits / +55,759 lines over
+   `08ea0e0^`**, touching `device.cu`, `verify.cpp`, `mtp.cpp`, `prefill.cpp`,
+   `generate.cpp`, `session.hpp`, `layer.cpp` and more. **The Fáze 2+ line references
+   above are valid for the sm61-1080ti tree (2ab8e23) but must be re-validated after the
+   branch is rebased onto 0.1.32** — the analysis conclusions (mechanisms, handoff
+   patterns, no-P2P discipline) need a re-check against the newer tree, not a blind carry.
+2. **Direct heterogeneous-role testing is not possible in this homelab, on either rig:**
+   - **Intel 8700K (Windows)**: the only Turing card (runs upstream `main` fine, cc >= 7.5)
+     — **one card, so no second device exists to pair with it**; heterogeneous roles can
+     never be exercised there.
+   - **x99**: two GTX 1080 Ti (Pascal, PHB topology) — both assignments of a two-role
+     setup are testable, but only on the `STRATA_EXPERIMENTAL_SM60` build; **upstream
+     `main` still refuses cc < 7.5** (`device.cu` guard, unwrapped there).
+   Consequence for Fáze 12: every heterogeneous-perf claim stays unmeasured here by
+   construction (symmetric 1080 Ti pair only); the bench script must be runnable
+   untouched by an owner of a mixed rig (e.g. RTX 4090 + RTX 2070).

@@ -355,3 +355,39 @@ CPU pool, and the Pascal build (`STRATA_EXPERIMENTAL_SM60`).
    Consequence for Fáze 12: every heterogeneous-perf claim stays unmeasured here by
    construction (symmetric 1080 Ti pair only); the bench script must be runnable
    untouched by an owner of a mixed rig (e.g. RTX 4090 + RTX 2070).
+---
+
+## 7. Re-validation on 0.1.32 (2026-10-01, commit worktree `sm61-hetero`)
+
+The `sm61-1080ti` commits were ported onto upstream `c499bd1` (0.1.32) in the worktree
+`/home/hozzy/src/Strata-rebase` (branch `sm61-hetero`). Port notes:
+
+- `33d9a9f` (sm61-enable) **superseded by upstream #236**: 0.1.32's CMake adds
+  `STRATA_EXPERIMENTAL_SM60=1` for `strata_core` and `device.cu` takes `kMinCc = 60`.
+- cc12d0a's logic re-applied by hand as the 0.1.32 `iq_pack.py` rewrote the pack writer
+  (tmp+rename+sidecar atomic publish); port = `SafeMemmap` on all three memmap sites, per-layer
+  fsync, resume on `experts.bin.tmp`.
+- 0.1.32's `open_sized()` still zeros `layer_next_` after `open()` rebuilt it — the open_sized
+  fix (7d0f9f9) remains required; ported as `db6a67c`.
+
+Anchor re-check (v0.1.30 → 0.1.32): `window_R_` kernel handoff `mtp.cpp:631 → 634`;
+`draft_first` R_ write-back → `mtp.cpp:825`; draft-chain syncs unchanged in shape
+(mtp.cpp:679-826); `draft_kv` cross-device refusal → `prefill.cpp:741`; static per-device cc
+caches → `qsa_select.cu:697` + `qsa_prompt_attn.cu:982`; `OnDevice on_mtp` →
+`generate.cpp:2499`; `kDrafterMib` → `generate.cpp:2287` (comment updated to "839 MiB"); P2P
+still absent everywhere (0 hits). The design's Fáze 1 conclusions survive 0.1.32.
+
+**New for Fáze 9**: upstream 0.1.32 already has an async-commit path (`E-6`,
+`g_commit_async` / `STRATA_VERIFY_ASYNC_COMMIT`, `commit_done_` event at `verify.cpp:351`;
+synchronisation kept as fallback by default and always under a split, `verify.cpp:1329-1338`).
+The drafter already reads only this window's final rows while commit completes in the
+background. Fáze 9's remaining scope is therefore mostly the draft-chain batching (the
+3 sequential launch+sync in `mtp.cpp`) rather than commit overlap.
+
+Build/test on 0.1.32 (sm61, -DCMAKE_CUDA_ARCHITECTURES=61): 237/237 targets; ctest 50/53 PASS
+(12 new upstream tests all pass). The 3 failures are pre-existing baseline, not rebase
+regressions: `ple_parity` (upstream test fixture absent), `kv_hybrid_parity` (mode-5
+`qsa_prompt_attn` refuses hybrid pools — fails identically on the 0.1.30 build; our
+production uses int8 KV, unaffected), `expert_multi_test` (E5-2678 v3 has no AVX512-VNNI/
+VBMI). Config note: vendored `third_party/ggml` in 0.1.32 is an incomplete checkout (no
+CMakeLists); configure with `-DSTRATA_GGML_DIR=<llama.cpp checkout with pinned 3cf0325>`.

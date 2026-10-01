@@ -35,6 +35,7 @@ import pathlib
 import shutil
 import subprocess
 import sys
+import time
 
 import numpy as np
 
@@ -78,6 +79,36 @@ def bf16_bytes(raw: np.ndarray, type_name: str) -> bytes:
     return quants.quantize(values, Q.BF16).tobytes()
 
 
+class SafeMemmap:
+    """pread-backed stand-in for np.memmap: reads retry on OSError instead of dying by SIGBUS
+    when the SATA link drops mid-read (x99 models-disk issue, controller-wide resets)."""
+
+    def __init__(self, path):
+        self._fd = os.open(str(path), os.O_RDONLY)
+        self.size = os.fstat(self._fd).st_size
+
+    def __getitem__(self, key):
+        s, e = key.start, key.stop
+        out = np.empty(e - s, dtype=np.uint8)
+        pos, tries = s, 0
+        while pos < e:
+            try:
+                buf = os.pread(self._fd, min(32 << 20, e - pos), pos)
+                if not buf:
+                    raise OSError("pread returned nothing at %d" % pos)
+            except OSError:
+                tries += 1
+                if tries > 600:
+                    raise
+                time.sleep(2)
+                continue
+            n = len(buf)
+            out[pos - s : pos - s + n] = np.frombuffer(buf, dtype=np.uint8)
+            pos += n
+            tries = 0
+        return out
+
+
 class Model:
     """All shards of one model: name -> (GGUFFile, TensorInfo, memmap, shard path)."""
 
@@ -96,7 +127,7 @@ class Model:
         self.where = {}
         for p in paths:
             g = G.GGUFFile(p)
-            mm = np.memmap(p, dtype=np.uint8, mode="r")
+            mm = SafeMemmap(p)
             for t in g.tensors:
                 size = t.expected_bytes()
                 if size is None or g.data_start + t.offset + size > mm.size:
@@ -334,15 +365,45 @@ def main() -> int:
     if path.exists() and path.stat().st_size == offset:
         print("experts.bin exists with the right size; not rewritten")
         return 0
-    with open(path, "wb") as fo:
-        for l, gt, dt, off, blob, ts in layout:
+    start_layer = 0
+    if path.exists():
+        size = path.stat().st_size
+        bounds = {e[3]: k for k, e in enumerate(layout)}
+        if size in bounds and size > 0:
+            start_layer = bounds[size]
+            print("experts.bin: resuming at layer index %d (existing %d bytes)" % (start_layer, size))
+        else:
+            path.unlink()
+    with open(path, "wb" if not start_layer else "ab") as fo:
+        for k, (l, gt, dt, off, blob, ts) in enumerate(layout):
+            if k < start_layer:
+                continue
             parts = [model.bytes(t.name).reshape(n_expert, -1) for t in ts]
             chunk = np.concatenate(parts, axis=1)          # (n_expert, blob): gate | up | down per expert
             assert chunk.shape == (n_expert, blob)
             fo.write(chunk.tobytes())
+            fo.flush()
+            os.fsync(fo.fileno())                          # keep the resume point exact across drops
             if l % 8 == 0:
                 print("  layer %2d  %-8s/%-7s blob %8d  at %.2f GiB" % (l, ts[0].type_name, ts[2].type_name, blob,
                                                                         off / 2**30), flush=True)
+    if start_layer:
+        samples = [x for x in (start_layer - 1, start_layer - 2, 0, 5, 11, 22) if 0 <= x < start_layer]
+        bad = 0
+        for k in samples:
+            l2, gt, dt, off, blob, ts = layout[k]
+            want = np.concatenate([model.bytes(t.name).reshape(n_expert, -1) for t in ts], axis=1).tobytes()
+            with open(path, "rb") as vf:
+                vf.seek(off)
+                if vf.read(len(want)) != want:
+                    bad += 1
+                    print("experts.bin spot-check FAILED at layer %d" % l2)
+        if bad:
+            path.unlink()
+            print("experts.bin: %d/%d resumed content checks failed; removed, rebuilding from zero next run"
+                  % (bad, len(samples)))
+            return 2
+        print("experts.bin spot checks OK (%d resumed layers sampled)" % len(samples))
     print("experts.bin: %d layers, %.2f GiB" % (n_layers, offset / 2**30))
     return 0
 

@@ -407,3 +407,9 @@ CMakeLists); configure with `-DSTRATA_GGML_DIR=<llama.cpp checkout with pinned 3
   "expected 0" prediction falsified - peer IS available over this topology).
 - Next (Fáze 2b): first consumers - point the static int cc_major[64] caches at the caps
   record (behaviour-identical), then Fáze 3 explicit roles.
+
+- Fase 2b done: `int device_cc_major(int)` - one shared per-ordinal cached accessor
+  (STRATA_EMULATE_CC honoured); both static cc-caches replaced by it, with the call-site A/B
+  override (STRATA_QSA_WARP = select / attn) applied as POLICY on top of the fact, exactly as
+  before (behaviour-identical: same kernels chosen, same failure paths). Build clean; ctest
+  unchanged (50/53, same 3 baseline).

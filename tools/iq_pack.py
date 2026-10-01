@@ -48,6 +48,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 
 import numpy as np
 
@@ -126,6 +127,36 @@ def bf16_bytes(raw: np.ndarray, type_name: str) -> bytes:
     return quants.quantize(values, Q.BF16).tobytes()
 
 
+class SafeMemmap:
+    """pread-backed stand-in for np.memmap: reads retry on OSError instead of dying by SIGBUS
+    when the models disk's SATA link drops mid-read.  Only slice access and .size are used."""
+
+    def __init__(self, path):
+        self._fd = os.open(str(path), os.O_RDONLY)
+        self.size = os.fstat(self._fd).st_size
+
+    def __getitem__(self, key):
+        s, e = key.start, key.stop
+        out = np.empty(e - s, dtype=np.uint8)
+        pos, tries = s, 0
+        while pos < e:
+            try:
+                buf = os.pread(self._fd, min(32 << 20, e - pos), pos)
+                if not buf:
+                    raise OSError("pread returned nothing at %d" % pos)
+            except OSError:
+                tries += 1
+                if tries > 600:
+                    raise
+                time.sleep(2)
+                continue
+            n = len(buf)
+            out[pos - s : pos - s + n] = np.frombuffer(buf, dtype=np.uint8)
+            pos += n
+            tries = 0
+        return out
+
+
 def f16_values(values: np.ndarray, name: str) -> np.ndarray:
     """values -> F16, nearest-even (numpy's conversion, which is the engine loader's f16_from_f32); refuses a value
     that is not finite or overflows F16."""
@@ -158,7 +189,7 @@ class Model:
         check_split(self.files)
         self.where = {}
         for p, g in zip(paths, self.files):
-            mm = np.memmap(p, dtype=np.uint8, mode="r")
+            mm = SafeMemmap(p)
             for t in g.tensors:
                 size = t.expected_bytes()
                 if size is None or g.data_start + t.offset + size > mm.size:
@@ -383,7 +414,7 @@ def index_from_base(a, src, base, out, g, T, mm) -> int:
         return 1
     bg = G.GGUFFile(base_src)
     BT = {t.name: t for t in bg.tensors}
-    bmm = np.memmap(base_src, dtype=np.uint8, mode="r")
+    bmm = SafeMemmap(base_src)
     header, rows = read_index(base / "index.txt")
     new_rows, extra = [], []
     served = 0
@@ -512,7 +543,7 @@ def main() -> int:
     out.mkdir(parents=True, exist_ok=True)
 
     g = G.GGUFFile(src)
-    mm = np.memmap(src, dtype=np.uint8, mode="r")
+    mm = SafeMemmap(src)
     model = Model(src)
     if len(model.paths) > 1:
         print("model shards: " + ", ".join(p.name for p in model.paths))
@@ -584,9 +615,30 @@ def main() -> int:
     # experts.bin, and an experts.bin without its sidecar is never reused
     sidecar.unlink(missing_ok=True)
     part = out / "experts.bin.tmp"
-    with open(part, "wb") as fo:
-        for l, gt, dt, off, blob, ts in layout:
+    start_layer = 0
+    bounds = {e[3]: k for k, e in enumerate(layout)}
+    if part.exists():
+        size = part.stat().st_size
+        if size in bounds and size > 0:
+            start_layer = bounds[size]
+            print("experts.bin: resuming at layer index %d (existing %d bytes)" % (start_layer, size))
+        else:
+            part.unlink(missing_ok=True)
+    with open(part, "wb" if start_layer == 0 else "r+b") as fo:
+        if start_layer:
+            fo.seek(size)
+        remaining = layout[start_layer:]
+        if not remaining:
+            part.replace(path)
+            side_tmp = out / "experts.bin.src.json.tmp"
+            side_tmp.write_text(json.dumps(want, indent=2) + "\n", encoding="utf-8")
+            side_tmp.replace(sidecar)
+            print("experts.bin.tmp is already complete: %d layers, %.2f GiB" % (len(layout), offset / 2**30))
+            return 0
+        for l, gt, dt, off, blob, ts in remaining:
             fo.write(layer_blobs(blob, ts).tobytes())
+            fo.flush()
+            os.fsync(fo.fileno())
             if l % 8 == 0:
                 print("  layer %2d  %-8s/%-7s blob %8d  at %.2f GiB" % (l, ts[0].type_name, ts[2].type_name, blob,
                                                                         off / 2**30), flush=True)

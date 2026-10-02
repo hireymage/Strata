@@ -566,3 +566,32 @@ per row; ctest 50/53 (the same 3 pre-existing).  Drafting 4.63 -> 4.14 ms/round 
 PHASE STATE after this: 1-8, 9, 10, 11, 12, 13 COMPLETE.  The hetero plan's implementation list is
 done; what remains is the PR strategy (issue to the author first, then a hetero-only PR) and the
 production tree's promotion decision.
+## 13. Fáze 14: the third-party test harness (`tools/hetero-test.sh`)
+
+Everything above was proven on OUR rig (2x GTX 1080 Ti). For the upstream issue to carry weight it
+must travel to OTHER rigs: different GPUs, different expert-cache ceilings, possibly one GPU. The
+harness turns the F13 gate rule into a one-command, dependency-free probe:
+
+    tools/hetero-test.sh BUILD_DIR "BASE_FLAGS" OUT_DIR [MAX_NEW=60] [REPEATS=2]
+
+- BUILD_DIR holds `strata` + `strata-device` (the tester's own build of the branch);
+- BASE_FLAGS is the tester's own model load (quoted, the engine's own demanded set -- the pack,
+  the (optional) MTP, quantization flags...); the harness only APPENDS the roles/batching flags;
+- the probe input is a deterministic random token-id list (seeded; the builds have no tokenizer,
+  so ids ARE the input) -- every variant runs the same ids with `--max-new`, temperature off.
+
+Variants: V0 baseline (same GPU), V1 roles 0->1, V2 roles reversed, V3 +`--draft-prefill-parallel`,
+V4 +`--draft-chain-batch`, V5 both, V6 `--auto-roles`; on ONE GPU with `--mtp`, V7 = the batch
+alone. Then the exactness row V1f: V1 at V0's auto slot count (`--expert-cache N`) -- the
+EQUAL-residency run that isolates "placement changed the output?" from "residency changed the
+output" (two-GPU rigs only, and only when BASE does not already force a numeric cache).
+
+The report (`OUT/report.md`, markdown, ready to paste): per run the accepted/of-totals, tok/round,
+ms/round drafting, expert slot count and the GREEDY stream md5; verdicts -- repeats identical
+(determinism); every auto-residency variant compared bit-exactly against a reference of the SAME
+residency (V1 if the slot counts match, else V0, else V1f), otherwise SKIPPED with the slot counts
+stated; V1f vs V0 as the placement-exactness proof; the residency-dividend NOTE when V0's and V1's
+auto slot counts differ (that difference IS the "is it worth it" signal on the tester's rig).
+
+Validated on the source rig (0.1.34 sm61-hetero-0134): all verdicts PASS, V1f == V0 bit-exact --
+the same outcome the F13 gate measured by hand.

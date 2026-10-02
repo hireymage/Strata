@@ -540,3 +540,29 @@ Fase 13 gate rule that follows:
   hand-off costs ~1.7 ms per ~939 ms window (~0.18 %); there is no measurable hand-off tax.
 - per-role VRAM after the binding (Fase 11): main 633 MiB free of 11163, draft 9619 MiB free of
   11165 (the drafter is tiny; the main's VRAM is the expert-cache budget).
+## 12. Fáze 9 krok-záznam (2026-10-02) — the batched draft chain (`--draft-chain-batch`, d21f369)
+
+The design's insight still held on 0.1.34 with one simplification: the chain's steps ALREADY
+propagate their data on the device (`mtp_select` leaves the next step's residual and token in
+`Rin_[0]` / `tok_[0]`), so the per-step waits only ever bought the HOST-side min-p cut.  The opt-in
+flag restructures `draft()` to stage every step's cell (`p + a + j`, known before any launch) up
+front, capture the step graphs while the stream is idle, launch the round graph and all of them
+back to back, and apply the cut from the mapped probabilities after ONE wait - the same rule as the
+per-step loop (the count of drafts whose probability and every one before it reaches min_p).  A
+step past the cut runs harmlessly: it writes only ring cells the chain rewrites when it reaches
+them again, and its drafts/probabilities are zeroed before the caller sees them.  Roles-independent
+(a same-device run gains too); STRATA_DECODE_TIMING's draft figure and the one-shot's
+`mtp ... ms/round drafting` measure it.
+
+Gate (125B, greedy 60 tokens, the F12 reference EXTRA - reconstructed from the pack's
+sm61-config.json and verified bit-identical to the a306853 reference streams before A/B): every
+row bit-identical to its flag-off reference - same-device (22/38/62), roles 0->1 (26/34/75), roles
+1->0, and `--spec-min-p 0.20` (an ACTIVE cut: 23/39/64, window sizes T4:21) - determinism x2-x3
+per row; ctest 50/53 (the same 3 pre-existing).  Drafting 4.63 -> 4.14 ms/round same-device,
+4.40 -> ~4.1 ms/round roles (noise ±0.4 over 25 rounds) - the drafter is ~0.5% of a ~939 ms window
+(Fase 7/12), so the batching is measured, not felt.  Gate logs: /tmp/bench-f9-ref-sd,
+/tmp/bench-f9-sd, /tmp/bench-f9-01, /tmp/bench-f9-01on, /tmp/bench-f9-10on, /tmp/bench-f9-minp-{off,on}.
+
+PHASE STATE after this: 1-8, 9, 10, 11, 12, 13 COMPLETE.  The hetero plan's implementation list is
+done; what remains is the PR strategy (issue to the author first, then a hetero-only PR) and the
+production tree's promotion decision.

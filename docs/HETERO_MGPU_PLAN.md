@@ -413,3 +413,33 @@ CMakeLists); configure with `-DSTRATA_GGML_DIR=<llama.cpp checkout with pinned 3
   override (STRATA_QSA_WARP = select / attn) applied as POLICY on top of the fact, exactly as
   before (behaviour-identical: same kernels chosen, same failure paths). Build clean; ctest
   unchanged (50/53, same 3 baseline).
+
+## 9. Fáze 3 gate-záznam (2026-10-02) — the portable-mapped hand-off is green
+
+The mapped-hand-off step (verifier's window residual carried through a host mapped mirror;
+cross-device kernel reads only of mapped host memory) CLOSED Fáze 3: the drafter runs on another
+GPU end to end, with the P2P path still never used.
+
+Two root findings from the gate runs (both now in code comments):
+
+1. **P2P on this rig is not only deadlocked, it is unnecessary**: `cudaDeviceCanAccessPeer`
+   answers yes, but plain `cudaMemcpyDeviceToDevice / cudaMemcpyDefault` across two non-peer
+   GPUs already works (driver stages through host) - measured with a standalone probe
+   (uva_probe.cu on the rig, 2026-10-02).  The design's premise holds: the peer path is
+   never required.
+2. **`cudaPointerGetAttributes` from a foreign context answers `devicePointer = (nil)`** for
+   another device's arena memory - the RoPE-table localization copied a nil source and failed
+   'invalid argument', and the fallback shared the main device's tables, which the draft
+   kernels then read cross-device and crashed with an illegal access (uva_probe2.cu).
+   Fix: localize_rope copies through the raw UVA pointers, never through the queried
+   devicePointer.  The same rule applies anywhere else we copy across devices.
+
+Gate result (125B pack, 95-token prompt, 60 new tokens, greedy, --spec 4, both 1080 Ti):
+the role plans 0->1 AND 1->0 (the reversed one loads the whole main stage on the second GPU) and
+the degenerate 0->0 WITH role flags are all rc=0 and **bit-identical** to the flagless baseline
+(60/60 tokens, same speculation statistics 23 rounds of 6, 37/65 drafts accepted).  The
+regression gate (Fáze 13 harness) compares the engine's "output :" dump lines.
+
+Harness note (bench-hetero.sh): the one-shot CLI takes --mtp DIR (the serve config's "mtp" key
+names the same directory; there is no --rt flag), and a native (IQ) pack additionally needs
+--native SHARD1, --ple-gguf, --prefill CHUNK and the --expert-profile residency table for --spec.

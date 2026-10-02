@@ -466,3 +466,77 @@ regression gate PASS both.  The banner and the 5011-slot cache match the certifi
 again).  ctest 50/53 (the 3 pre-existing).  Harness note: ctest with -j 4 collides while
 the production engine holds the RAM - run the suite serially near a loaded machine; a
 single test alone passes at any time.
+## 11. Fáze 6/7/8/10/11 krok-záznam + the determinism fix (2026-10-02)
+
+Commits on `sm61-hetero-0134` (tree `/home/hozzy/src/Strata-rebase`): 041e21b (Fase 6: the drafter
+ring restore launches on the ring owner device), 5032a98 (Fase 7 instrumentation + THE DETERMINISM
+FIX), 7a15ea5 (Fase 8: `--draft-prefill-parallel`), cc4646d (Fase 10: `--auto-roles`), ae5c180
+(Fase 11: per-role VRAM report). ctest stays 50/53 throughout (the same 3 pre-existing parity
+failures: `ple_parity`, `kv_hybrid_parity`, `expert_multi_test`).
+
+### 11.1 THE ROLES' NONDETERMINISM (pre-existing, only main=0 draft=1) — root cause and fix (5032a98)
+
+Symptom: a roles 0->1 run gave either A=23 rounds/37 of 65 or B=24/36/69 (or 25/35/72); the same
+GPU0-only and 1->0 runs were always A. Method: CRC instrumentation over the mapped mirror, the
+drafter window and the per-round drafts (STRATA_DBG_MIRROR/DRAFT, reverted before the commit) plus
+one-Knob bisections. Findings, in order:
+
+- The hand-off itself is EXACT: the mirror's crc equals the drafter's window crc in EVERY window of
+  both attractor runs, and the divergence starts at pos=101 = the first window AFTER the first
+  adapt round ((rounds+1) % 4) on IDENTICAL window inputs (state, tokens, drafts all bit-equal).
+- The suspect is main-side: `adapt()` runs the experts' H2D swap copies on `adapt_stream` (async),
+  while the residency table (d_res) reached the devices only in `apply_pending` - a NON-BLOCKING
+  call at the window boundary that DROPS while a copy is in flight. Two consequences:
+  (a) the evicted expert stays marked resident -> a window can read its slot mid-overwrite;
+  (b) the admitted expert switches from the CPU pool to the GPU-resident path at whichever window
+  the copy had landed by - and the GPU expert path and the CPU pool path round DIFFERENTLY (the
+  pre-existing parity gap; the same one behind the 3 failing ctests) - so the stream depends on the
+  race. The 0->0 and 1->0 runs had no jitter in that timing, hence always A.
+- Bisect proof: `--adapt-swaps 0` (adapt runs, no copies) is deterministic (D-attractor 26/37/75 x2);
+  an early res_upload()-only attempt still left B alive (it fixed (a) only).
+
+Fix: upload the table right after the copies are SUBMITTED (evictions visible at once, and
+swapped-in experts stay non-resident until they land) and make the window-boundary call BLOCKING
+(`apply_pending(true)`), bounded by one ~1.4 MB copy (~1 ms). Both decode loops (serve, one-shot)
+and the chat loops got it.
+
+### 11.2 THE NEW GATE REFERENCE (the old certified stream is VOID)
+
+The previously certified reference (A, md5 1515024ed68a8a2797f98710df847ca7) was measured UNDER
+the race: deterministic by schedule, not by construction. WITH the fix:
+
+- baseline (no roles flags, drafter same-device, 4400 slots): 22 rounds/38 of 62, bit-identical x3;
+- roles 1->0 (4400 slots): 22/38/62, bit-identical x3, BIT-IDENTICAL to the baseline;
+- roles 0->1 (auto, 5011 slots): 26 rounds/34 of 75, bit-identical x3;
+- roles 0->1 with FORCED `--expert-cache 4400`: 22/38/62, BIT-IDENTICAL to the baseline.
+
+That last row is the real proof of the phases: under EQUAL expert residency the drafter's placement
+changes nothing token for token; directions otherwise differ only through residency (the auto slot
+count differs because the drafter's 68+870 MiB sit on the MAIN's GPU when the roles are the same
+device but on the DRAFT's otherwise). Gate logs: /tmp/bench-gate0 (fc9b4c93e2c2), /tmp/bench-gate10
+(22fe41487d75), /tmp/bench-gate01 (39d97c814cd8), /tmp/bench-gate01n (b172785529af).
+
+Fase 13 gate rule that follows:
+
+1. every plan is bit-exact across repeats (now enforced >= x2);
+2. directions are compared only under EQUAL residency - either the same effective slot count, or a
+   forced `--expert-cache N` shared by all plans;
+3. the reference streams are the 22/38/62 ones above (NOT the 0.1.34 re-certification's md5).
+
+### 11.3 Fase 8 measurements (the pipelined prompt fill)
+
+- The 95-token probe prompt: no change (5.30 vs 5.30 s prefill; the drafter catches up inside one
+  chunk). The flag's output is bit-identical with and without the pipeline.
+- A 4,099-token prompt (3 chunks of 2,048, mmap-experts): 655.6 -> 590.7 and 587.5 s without the
+  flag vs 469.3 and 656.7 s with it. The prefill is I/O-BOUND (the experts' mmap reads alone: 388 -
+  577 s = 78-98 % of the window), and the run-to-run spread covers the drafter's share, so the
+  pipeline's gain is NOT PROVEN on this rig's pack - the honest number is "variance-noise-dominated";
+  a fair claim needs a cached/pinned-expert profile (the flag itself is correct and off by default).
+
+### 11.4 Fase 7/11 numbers worth quoting
+
+- decode timing (serve probe, 125B, roles 0->1): 938.91 ms/window, of which verify 929.86 (host
+  experts 715.96 = the CPU pool), commit/emit 0.14, draft 4.42, mirror 1.66 - the mapped mirror
+  hand-off costs ~1.7 ms per ~939 ms window (~0.18 %); there is no measurable hand-off tax.
+- per-role VRAM after the binding (Fase 11): main 633 MiB free of 11163, draft 9619 MiB free of
+  11165 (the drafter is tiny; the main's VRAM is the expert-cache budget).

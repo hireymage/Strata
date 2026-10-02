@@ -443,3 +443,26 @@ regression gate (Fáze 13 harness) compares the engine's "output :" dump lines.
 Harness note (bench-hetero.sh): the one-shot CLI takes --mtp DIR (the serve config's "mtp" key
 names the same directory; there is no --rt flag), and a native (IQ) pack additionally needs
 --native SHARD1, --ple-gguf, --prefill CHUNK and the --expert-profile residency table for --spec.
+## 10. Fáze 4 krok-záznam (2026-10-02) — the roles' capability view and the ambient-device contract
+
+The roles' plan now reads its own premises out loud at startup (generate.cpp, after the
+role range check): one informational line per role device (name, cc, dp4a or the software
+fallback, free VRAM) plus the peer-matrix entry for the pair, reported only - the mapped
+mirror needs no peer pair, the kernel paths self-select per device.  No new refusals.
+
+The step also captured a real hazard: `caps_from` (device.cu, the `device_caps()` record's
+per-device probe) `cudaSetDevice`s the probed ordinal and never handed the ambient device
+back.  The roles view's three probes left the LAST probed ordinal current, and the engine's
+later device picks read the wrong device - the verifier's banner printed "GPU 1" for
+`--main-device 0`, the expert-cache auto sizing came off the wrong card (4579 instead of
+the certified 5011 slots), and the run died with "prefill copy_i32: an illegal memory
+access".  Fix: a CurrDeviceGuard in caps_from brackets the probe (destructor restores, the
+throw paths included).  `device_info` stays unguarded on purpose - the engine's init path
+may legitimately consume the set device; only the informational query changed its contract.
+
+Gate (125B pack, 95-token prompt, 60 new tokens, greedy, --spec 4): 0->1 and 1->0 both
+rc=0 and BIT-IDENTICAL to the certified baseline (the same 23 rounds of 6, 37/65 accepted;
+regression gate PASS both.  The banner and the 5011-slot cache match the certified log
+again).  ctest 50/53 (the 3 pre-existing).  Harness note: ctest with -j 4 collides while
+the production engine holds the RAM - run the suite serially near a loaded machine; a
+single test alone passes at any time.
